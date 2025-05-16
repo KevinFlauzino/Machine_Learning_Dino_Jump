@@ -6,6 +6,7 @@ import math
 import time
 import pickle
 import os
+import sys
 
 # Inicialização dos pesos --------------------
 if os.path.exists("pesos_dino.pkl"):
@@ -23,6 +24,22 @@ learning_rate_colidiu = 1e-4
 def tangente_hiperbolica(x):
     return math.tanh(x)
 
+def derivada_tanh(u):
+    # d/du tanh(u) = 1 - tanh(u)^2
+    return 1 - math.tanh(u)**2
+
+
+def salvar_pesos():
+    global z
+    
+    filename = "pesos_dino.pkl"
+    # Cria diretório se não existir (caso você queira salvar em subpastas)
+    os.makedirs(os.path.dirname(filename) or ".", exist_ok=True)
+
+    with open(filename, "wb") as f:
+        pickle.dump(z, f)
+    print(f"Pesos salvos com sucesso em '{filename}'")
+
 def rede(distancia, velocidade_obs, altura_cacto, energia, largura_cacto, bias, w0, w1, w2, w3, w4):
       
     w = [w0, w1, w2, w3, w4]   
@@ -33,34 +50,24 @@ def rede(distancia, velocidade_obs, altura_cacto, energia, largura_cacto, bias, 
 def verifica(z):
     return 1 if z > 0.2 else 0
 
-def atualiza_passou(x, y, bias, w0, w1, w2, w3, w4, lr):
-    distancia, vel, altura, energia, largura, esperado = x
-    z = bias + w0 * distancia + w1 * vel + w2 * altura + w3 * energia + w4 * largura
-    erro = z - esperado
+def atualiza(z, entrada, lr, esperado):
+    bias, w0, w1, w2, w3, w4 = z
+    x0, x1, x2, x3, x4       = entrada  # ← espera 5 valores
 
-    bias -= lr * erro * 1
-    w0   -= lr * erro * distancia
-    w1   -= lr * erro * vel
-    w2   -= lr * erro * altura
-    w3   -= lr * erro * energia
-    w4   -= lr * erro * largura
+    u = bias + w0*x0 + w1*x1 + w2*x2 + w3*x3 + w4*x4
+    y = math.tanh(u)
 
-    return [bias, w0, w1, w2, w3, w4, abs(erro)]
+    erro  = y - esperado
+    delta = erro * (1 - math.tanh(u)**2)
 
+    bias -= lr * delta
+    w0   -= lr * delta * x0
+    w1   -= lr * delta * x1
+    w2   -= lr * delta * x2
+    w3   -= lr * delta * x3
+    w4   -= lr * delta * x4
 
-def atualiza_colidiu(dados, bias, w0, w1, w2, w3, w4, lr):
-    distancia, vel, altura, energia, largura, esperado = dados
-    z = bias + w0 * distancia + w1 * vel + w2 * altura + w3 * energia + w4 * largura
-    erro = z - esperado
-
-    bias += lr * erro
-    w0   += lr * erro * distancia
-    w1   += lr * erro * vel
-    w2   += lr * erro * altura
-    w3   += lr * erro * energia
-    w4   += lr * erro * largura
-
-    return [bias, w0, w1, w2, w3, w4, abs(erro)] 
+    return [bias, w0, w1, w2, w3, w4]
 
 # Plotar o gráfico de convergência
 def grafico_convergencia(cost_values, iterations, soma): 
@@ -81,103 +88,111 @@ def grafico_convergencia(cost_values, iterations, soma):
 # Inicialização do Pygame
 pygame.init()
 
-# Configurações da tela
+
+# Configurações / Variáveis --------------
 largura_tela = 1500
-altura_tela = 500
+altura_tela  = 500
 tela = pygame.display.set_mode((largura_tela, altura_tela), pygame.HWSURFACE)
 pygame.display.set_caption("Jogo do Dinossauro")
-
-# Cores
-BRANCO = (255, 255, 255)
-PRETO = (0, 0, 0)
-
-# Variáveis do dinossauro
-dino_pos_x = 50
-dino_pos_y = altura_tela - 50
-dino_vel_y = 0
-potencia_pulo = -3   #-0.5
-dino_gravidade = 0.05  #-0.001
-dino_tamanho = 50
-dino_img = pygame.image.load("dino.png")
-dino_img = pygame.transform.scale(dino_img, (50, 50))
-energia = 1
-
-# Variáveis do obstáculo
-obstaculo_pos_x = largura_tela
-obstaculo_pos_y = altura_tela - 50
-largura_max_obstaculo = 450
-largura_min_obstaculo = 300
-obstaculo_vel_x_min =8
-obstaculo_vel_x_max = 16
-obstaculo_altura_min = 40
-obstaculo_altura_max = 60
-
-obstaculo_largura = random.randrange(largura_min_obstaculo, largura_max_obstaculo)
-obstaculo_altura = random.randrange(obstaculo_altura_min, obstaculo_altura_max)
-obstaculo_vel_x = random.randrange(obstaculo_vel_x_min, obstaculo_vel_x_max)
-cacto_img = pygame.image.load("cacto.png")
-cacto_img = pygame.transform.scale(cacto_img, (50, obstaculo_altura))
-
-# Estado do jogo
-game_over = False
-pontuacao = 0
-distancia = 0
-perdeu = 0
-
 relogio = pygame.time.Clock()
-FPS = 120  # Limitar a 60 quadros por segundo
+FPS = 120
 
-#Data base
-data_base_passou = []
-data_base_colidiu = []
-cont = 0
-contador_velocidade = 0
-soma = 0
-acuracia= 0
-acerto_consec = 0
-perdeu_consec = 0
-toque_depois_pulo = 0
-distancia_pulo = 0
-velocidade_pulo = 0
+# — Cores —
+BRANCO = (255, 255, 255)
+PRETO  = (0, 0, 0)
 
-peso_bias = []
-peso_w0 = []
-peso_w1 = []
-peso_w2 = []
-peso_w3 = []
-peso_w4 = []
+# — Dinossauro —
+dino_pos_x      = 50
+dino_pos_y      = altura_tela - 50
+dino_vel_y      = 0
+potencia_pulo   = -3
+dino_gravidade  = 0.05
+dino_tamanho    = 50
+dino_img        = pygame.image.load("dino.png")
+dino_img        = pygame.transform.scale(dino_img, (dino_tamanho, dino_tamanho))
+energia         = 1.0
 
-#Para graficos
-cost_values = [] 
+# — Obstáculo (e máximos para normalização) —
+obstaculo_pos_x         = largura_tela
+obstaculo_pos_y         = altura_tela - 50
+largura_min_obstaculo   = 300
+largura_max_obstaculo   = 450
+obstaculo_altura_min    = 40
+obstaculo_altura_max    = 60
+obstaculo_vel_x_min     = 8
+obstaculo_vel_x_max     = 16
+
+# sorteio inicial
+obstaculo_largura = random.randrange(largura_min_obstaculo, largura_max_obstaculo)
+obstaculo_altura  = random.randrange(obstaculo_altura_min,    obstaculo_altura_max)
+obstaculo_vel_x   = random.randrange(obstaculo_vel_x_min,     obstaculo_vel_x_max)
+cacto_img         = pygame.image.load("cacto.png")
+cacto_img         = pygame.transform.scale(cacto_img, (50, obstaculo_altura))
+
+# — Estado do jogo —
+game_over = False
+pontuacao  = 0
+distancia  = 0
+perdeu     = 0
+
+# — Rede neural: inicialização dos pesos —
+bias0 = 0.0
+w00   = 0.0
+w10   = 0.0
+w20   = 0.0
+w30   = 0.0
+w40   = 0.0
+z     = [bias0, w00, w10, w20, w30, w40]
+
+# learning rates
+learning_rate_passou  = 0.001
+learning_rate_colidiu = 0.001
+
+# — Listas de erro e iterações (para gráficos) —
+erro_passou      = []    # <— re-adicionada
+erro_colidiu     = []    # <— re-adicionada
+iterations_passou  = []
 iterations_colidiu = []
-iterations_passou = []
-erro_colidiu = []
-erro_passou = []
-numero_att_passou = 0
-numero_att_colidiu = 0
+
+# — Métricas temporárias de pulo (usadas pela IA) —
+distancia_pulo  = 0.0
+velocidade_pulo = 0.0
+
+# — Contadores de número de updates —
+numero_att_passou   = 0
+numero_att_colidiu  = 0
+
+# — Inicialização de métricas de acurácia —  
+acuracia    = 0.0     # ← define antes de usar
 
 #----------------------------------------------------------------------------------------
 paused = False
 
 # Loop principal do jogo
-while not game_over: 
+while not game_over:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             game_over = True
 
-        if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_p:  # tecla P para pausar/despausar
-                paused = not paused
+        elif event.type == pygame.KEYDOWN:
+            # PAUSA / DESPAUSA com P
+            if event.key == pygame.K_p:
+                paused = True
+                while paused:
+                    for ev in pygame.event.get():
+                        if ev.type == pygame.KEYDOWN and ev.key == pygame.K_p:
+                            paused = False
+                        elif ev.type == pygame.QUIT:
+                            pygame.quit()
+                            sys.exit()
+                    relogio.tick(FPS)
 
-            if event.key == pygame.K_SPACE and dino_pos_y == altura_tela - 50 and not paused:
-                dino_vel_y = potencia_pulo
-                energia -= 1
-                distancia_pulo = distancia
-                velocidade_pulo = obstaculo_vel_x 
-
-            if event.key == pygame.K_g:
+            # SPACE => termina o jogo, salva pesos e gera gráficos
+            elif event.key == pygame.K_SPACE:
+                salvar_pesos()
                 grafico_convergencia(erro_passou, iterations_passou, soma)
                 grafico_convergencia(erro_colidiu, iterations_colidiu, soma)
+                game_over = True
 
     #Distância
     distancia = obstaculo_pos_x - dino_pos_x  
@@ -194,8 +209,14 @@ while not game_over:
     if obstaculo_pos_x < -obstaculo_largura:
 
         if acerto_consec == 0 and pontuacao > 0:        
-            entrada = (distancia_pulo, velocidade_pulo, obstaculo_altura, energia, obstaculo_largura, 1)
-            z = atualiza_passou(entrada, z[0], z[1], z[2], z[3], z[4], z[5], learning_rate_passou)
+            entrada = (
+                distancia / largura_tela,
+                obstaculo_vel_x / obstaculo_vel_x_max,
+                obstaculo_altura / obstaculo_altura_max,
+                energia,
+                obstaculo_largura / largura_max_obstaculo
+            )
+            z = atualiza(z, entrada, learning_rate_colidiu, 0)
             #Dados para o grafico de convergencia
             numero_att_passou += 1
             erro_passou.append(z[6])
@@ -209,7 +230,18 @@ while not game_over:
         acerto_consec += 1    
         pontuacao += 1 
         energia = 1        
-        #data_base_passou.append((distancia_pulo, velocidade_pulo, obstaculo_altura, energia, obstaculo_largura, 1))   
+
+    # normalização simples
+    dist_norm   =  (distancia)          / largura_tela         # [0,1]
+    vel_norm    =  obstaculo_vel_x      / obstaculo_vel_x_max  # [0,1]
+    alt_norm    =  obstaculo_altura     / obstaculo_altura_max # [0,1]
+    eng_norm    =  energia               # já em [0,1]
+    larg_norm   =  obstaculo_largura    / largura_max_obstaculo# [0,1]
+
+    # e depois use esses na rede:
+    soma = rede(dist_norm, vel_norm, alt_norm, eng_norm, larg_norm,
+                z[0], z[1], z[2], z[3], z[4], z[5])
+
 
     #Usando funções para rede
     soma = rede(distancia, obstaculo_vel_x, obstaculo_largura, energia, perdeu, z[0], z[1], z[2], z[3], z[4], z[5]) / 1000
@@ -248,8 +280,14 @@ while not game_over:
         pygame.time.wait(1000) 
         if ((dino_inf_dir[0] >= obstaculo_sup_esq[0]) and (dino_inf_dir[0] <= obstaculo_sup_dir[0]) and (dino_inf_dir[1] >= obstaculo_sup_dir[1])) and ((dino_sup_dir[0] < obstaculo_sup_esq[0]) and (dino_sup_dir[0] < obstaculo_sup_dir[0]) and (dino_sup_dir[1] < obstaculo_sup_dir[1])):
             #Atualiza para esperar mais um pouco antes de pular
-            entrada = (distancia_pulo, velocidade_pulo, obstaculo_altura, energia, obstaculo_largura, 1)
-            z = atualiza_passou(entrada, z[0], z[1], z[2], z[3], z[4], z[5], learning_rate_passou)
+            entrada = (
+                distancia / largura_tela,
+                obstaculo_vel_x / obstaculo_vel_x_max,
+                obstaculo_altura / obstaculo_altura_max,
+                energia,
+                obstaculo_largura / largura_max_obstaculo
+            )
+            z = atualiza(z, entrada, learning_rate_colidiu, 0)
             #Dados para o grafico de convergencia
             numero_att_passou += 1
             erro_passou.append(z[6])
@@ -257,11 +295,17 @@ while not game_over:
 
         else:
             #Atualiza para esperar mais um pouco antes de pular
-            entrada = (distancia_pulo, velocidade_pulo, obstaculo_altura, energia, obstaculo_largura, 0)  # esperado = 0 para colisão
-            z = atualiza_colidiu(entrada, z[0], z[1], z[2], z[3], z[4], z[5], learning_rate_colidiu)
+            entrada = (
+                distancia / largura_tela,
+                obstaculo_vel_x / obstaculo_vel_x_max,
+                obstaculo_altura / obstaculo_altura_max,
+                energia,
+                obstaculo_largura / largura_max_obstaculo
+            )
+            z = atualiza(z, entrada, learning_rate_colidiu, 0)
             #Dados para o grafico de convergencia
             numero_att_colidiu += 1
-            erro_colidiu.append(z[6])
+            erro_colidiu.append(z[5])
             iterations_colidiu.append(numero_att_colidiu) 
 
         obstaculo_largura = random.randrange(largura_min_obstaculo, largura_max_obstaculo)
